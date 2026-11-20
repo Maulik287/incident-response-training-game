@@ -47,9 +47,32 @@ def test_milestone_2():
 
 
 # Milestone 3: Train an LM to predict the next likely incident given a current situation.
-@pytest.mark.skip(reason="remove this line when you start milestone 3")
 def test_milestone_3():
-    raise NotImplementedError("write the test for milestone 3")
+    from app.core import milestone_3, IncidentSequenceLM
+
+    lm = IncidentSequenceLM()
+    history = lm.continued_pretraining(
+        train_sequences=[
+            ["traffic_collision", "fuel_leak", "vehicle_fire"],
+            ["weather_hazard", "traffic_collision", "road_blockage"],
+        ],
+        steps=20,
+        eval_every=10,
+    )
+    assert len(history) > 0
+    assert lm.is_trained
+
+    preds = lm.predict_next(["traffic_collision", "fuel_leak"], top_k=3)
+    assert len(preds) == 3
+    assert all(0.0 <= prob <= 1.0 for _, prob in preds)
+    # Total sum of top predictions is <= 1.0
+    assert sum(prob for _, prob in preds) <= 1.01
+
+    res = milestone_3(steps=50)
+    assert res["status"] == "completed"
+    assert "evaluation_metrics" in res
+    assert res["evaluation_metrics"]["mrr"] > 0.0
+    assert len(res["sample_predictions"]) == 3
 
 
 # Milestone 4: Implement a simple text-based game where the player makes resource allocation decisions based on predicted events.
