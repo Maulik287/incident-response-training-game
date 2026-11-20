@@ -26,9 +26,24 @@ def test_milestone_1():
 
 
 # Milestone 2: Discover frequent incident sequences using `thilimarketbasket`.
-@pytest.mark.skip(reason="remove this line when you start milestone 2")
 def test_milestone_2():
-    raise NotImplementedError("write the test for milestone 2")
+    from app.core import milestone_2, mine_incident_patterns
+
+    patterns = mine_incident_patterns(min_support=0.15, min_confidence=0.35)
+    assert patterns["total_frequent_itemsets"] > 0
+    assert patterns["total_sequential_rules"] > 0
+    assert any("traffic_collision" in item["items"] for item in patterns["frequent_itemsets"])
+
+    res = milestone_2()
+    assert res["status"] == "completed"
+    assert "patterns_summary" in res
+    assert len(res["top_frequent_pairs"]) > 0
+    assert len(res["top_sequential_cascades"]) > 0
+    for casc in res["top_sequential_cascades"]:
+        assert "antecedent" in casc
+        assert "consequent" in casc
+        assert casc["confidence"] >= 0.35
+        assert casc["lift"] > 0.0
 
 
 # Milestone 3: Train an LM to predict the next likely incident given a current situation.

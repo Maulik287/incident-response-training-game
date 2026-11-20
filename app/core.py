@@ -324,10 +324,163 @@ def milestone_1() -> Dict[str, Any]:
     return result
 
 
-# --- Milestone 2: Discover frequent incident sequences using `thilimarketbasket`.
-# Hint: Apply the `thilimarketbasket` technique to identify frequent incident sequences.
-def milestone_2():  # TODO(milestone 2)
-    raise NotImplementedError("TODO(milestone 2)")
+# ============================================================================
+# Milestone 2: Discover frequent incident sequences using `thilimarketbasket`
+# ============================================================================
+
+@dataclass
+class AssociationRuleResult:
+    """An association rule discovered from incident sequence baskets."""
+    antecedent: List[str]
+    consequent: List[str]
+    support: float
+    confidence: float
+    lift: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "antecedent": self.antecedent,
+            "consequent": self.consequent,
+            "support": round(self.support, 4),
+            "confidence": round(self.confidence, 4),
+            "lift": round(self.lift, 4),
+        }
+
+
+@dataclass
+class SequentialRuleResult:
+    """An ordered sequential transition rule: antecedent precedes consequent."""
+    antecedent: str
+    consequent: str
+    support: float
+    confidence: float
+    lift: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "antecedent": self.antecedent,
+            "consequent": self.consequent,
+            "support": round(self.support, 4),
+            "confidence": round(self.confidence, 4),
+            "lift": round(self.lift, 4),
+        }
+
+
+def mine_incident_patterns(
+    reports: Optional[List[IncidentReport]] = None,
+    min_support: float = 0.15,
+    min_confidence: float = 0.35,
+) -> Dict[str, Any]:
+    """Mine frequent incident itemsets and ordered sequence rules using thilimarketbasket."""
+    if reports is None:
+        reports = get_default_incident_reports()
+
+    baskets = [r.ordered_sequence for r in reports]
+    n_reports = len(baskets)
+
+    # 1. Use thilimarketbasket for itemset mining
+    if frequent_itemsets is not None:
+        raw_itemsets = frequent_itemsets(baskets, min_support=min_support, max_size=4)
+        raw_rules = rules(raw_itemsets, min_confidence=min_confidence) if rules is not None else []
+    else:
+        # Fallback pure-python itemset mining if thilimarketbasket not available
+        raw_itemsets = {}
+        single_counts: Dict[str, int] = {}
+        for b in baskets:
+            for item in set(b):
+                single_counts[item] = single_counts.get(item, 0) + 1
+        for item, cnt in single_counts.items():
+            supp = cnt / n_reports
+            if supp >= min_support:
+                raw_itemsets[frozenset([item])] = supp
+        raw_rules = []
+
+    # Format frequent itemsets
+    formatted_itemsets = []
+    for itemset, supp in raw_itemsets.items():
+        formatted_itemsets.append({
+            "items": sorted(list(itemset)),
+            "size": len(itemset),
+            "support": round(float(supp), 4),
+            "count": int(round(float(supp) * n_reports)),
+        })
+    formatted_itemsets.sort(key=lambda x: (-x["size"], -x["support"]))
+
+    # Format association rules
+    formatted_rules = []
+    for ante, cons, supp, conf, lift in raw_rules:
+        formatted_rules.append(
+            AssociationRuleResult(
+                antecedent=sorted(list(ante)),
+                consequent=sorted(list(cons)),
+                support=float(supp),
+                confidence=float(conf),
+                lift=float(lift),
+            ).to_dict()
+        )
+    formatted_rules.sort(key=lambda r: (-r["lift"], -r["confidence"]))
+
+    # 2. Mine directed sequential transitions (temporal ordering: A precedes B)
+    seq_counts: Dict[Tuple[str, str], int] = {}
+    item_occ: Dict[str, int] = {}
+
+    for b in baskets:
+        seen_items = set()
+        for i, first in enumerate(b):
+            if first not in seen_items:
+                item_occ[first] = item_occ.get(first, 0) + 1
+                seen_items.add(first)
+            for second in b[i+1:]:
+                pair = (first, second)
+                seq_counts[pair] = seq_counts.get(pair, 0) + 1
+
+    sequential_rules = []
+    for (first, second), cnt in seq_counts.items():
+        supp = cnt / n_reports
+        if supp >= min_support:
+            conf = cnt / max(1, item_occ.get(first, 1))
+            cons_prob = item_occ.get(second, 1) / n_reports
+            lift = conf / max(1e-5, cons_prob)
+            if conf >= min_confidence:
+                sequential_rules.append(
+                    SequentialRuleResult(
+                        antecedent=first,
+                        consequent=second,
+                        support=supp,
+                        confidence=conf,
+                        lift=lift,
+                    ).to_dict()
+                )
+    sequential_rules.sort(key=lambda r: (-r["confidence"], -r["lift"]))
+
+    return {
+        "n_reports": n_reports,
+        "min_support": min_support,
+        "min_confidence": min_confidence,
+        "total_frequent_itemsets": len(formatted_itemsets),
+        "frequent_itemsets": formatted_itemsets,
+        "total_association_rules": len(formatted_rules),
+        "association_rules": formatted_rules,
+        "total_sequential_rules": len(sequential_rules),
+        "sequential_rules": sequential_rules,
+    }
+
+
+def milestone_2() -> Dict[str, Any]:
+    """Milestone 2: Discover frequent incident sequences using `thilimarketbasket`.
+
+    Applies frequent itemset mining and sequential pattern association to discover
+    critical cascading failure chains (e.g., traffic_collision -> fuel_leak -> vehicle_fire).
+    """
+    patterns = mine_incident_patterns(min_support=0.15, min_confidence=0.35)
+    return {
+        "milestone": 2,
+        "status": "completed",
+        "description": "Frequent incident sequences and association rules mined with thilimarketbasket",
+        "patterns_summary": patterns,
+        "top_frequent_pairs": [it for it in patterns["frequent_itemsets"] if it["size"] >= 2][:5],
+        "top_sequential_cascades": patterns["sequential_rules"][:5],
+    }
 
 
 # --- Milestone 3: Train an LM to predict the next likely incident given a current situation.
