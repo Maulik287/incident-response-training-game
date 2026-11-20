@@ -912,17 +912,20 @@ class IncidentResponseGame:
         else:
             containment_status = "Escalated"
 
-        # Calculate Turn Score:
-        # +40 for full containment, +20 for partial
-        # +30 for correct prediction
-        # -10 per unit deficit (under-allocation)
-        # -3 per unit waste (over-allocation)
-        base_score = 40.0 if all_met else (20.0 if any_met else 0.0)
-        pred_bonus = 30.0 if prediction_correct else 0.0
-        penalty_deficit = under_deficit * 10.0
-        penalty_waste = over_waste * 3.0
+        # Calculate Turn Score (0 to 100):
+        # 45% Containment (45 if all met, 20 if partial, 0 if escalated)
+        # 35% Prediction accuracy bonus (35 if correct, 0 otherwise)
+        # 20% Resource Efficiency (useful allocated / total allocated)
+        alloc_useful = sum(min(allocated.get(r, 0), required.get(r, 0)) for r in RESOURCE_TYPES)
+        alloc_total = sum(allocated.values())
+        eff_ratio = (alloc_useful / max(1, alloc_total)) if alloc_total > 0 else 0.0
 
-        turn_score = max(0.0, min(100.0, base_score + pred_bonus - penalty_deficit - penalty_waste))
+        containment_pts = 45.0 if all_met else (20.0 if any_met else 0.0)
+        pred_pts = 35.0 if prediction_correct else 0.0
+        eff_pts = eff_ratio * 20.0
+        deficit_penalty = min(20.0, under_deficit * 4.0)
+
+        turn_score = max(0.0, min(100.0, containment_pts + pred_pts + eff_pts - deficit_penalty))
 
         result = TurnResult(
             turn_index=next_step,
@@ -1017,7 +1020,213 @@ def milestone_4() -> Dict[str, Any]:
     }
 
 
-# --- Milestone 5: Evaluate player performance based on efficient resource use and accurate predictions.
-# Hint: Define and apply metrics to evaluate player performance based on resource use and prediction accuracy.
-def milestone_5():  # TODO(milestone 5)
-    raise NotImplementedError("TODO(milestone 5)")
+# ============================================================================
+# Milestone 5: Evaluate Player Performance Based on Resource Use & Predictions
+# ============================================================================
+
+@dataclass
+class TraineePerformanceReport:
+    """Quantitative performance scorecard evaluating emergency commander response."""
+    strategy_name: str
+    scenarios_evaluated: int
+    total_turns: int
+    prediction_accuracy: float
+    containment_rate: float
+    avg_resource_efficiency: float
+    avg_deficit_per_turn: float
+    avg_waste_per_turn: float
+    overall_score: float
+    grade: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "strategy_name": self.strategy_name,
+            "scenarios_evaluated": self.scenarios_evaluated,
+            "total_turns": self.total_turns,
+            "prediction_accuracy": round(self.prediction_accuracy, 4),
+            "containment_rate": round(self.containment_rate, 4),
+            "avg_resource_efficiency": round(self.avg_resource_efficiency, 4),
+            "avg_deficit_per_turn": round(self.avg_deficit_per_turn, 2),
+            "avg_waste_per_turn": round(self.avg_waste_per_turn, 2),
+            "overall_score": round(self.overall_score, 2),
+            "grade": self.grade,
+        }
+
+
+def compute_performance_grade(score: float) -> str:
+    """Assign letter grade and operational readiness rating."""
+    if score >= 90.0:
+        return "S (Incident Commander Elite)"
+    if score >= 80.0:
+        return "A (Field Ready Commander)"
+    if score >= 70.0:
+        return "B (Competent Responder)"
+    if score >= 55.0:
+        return "C (Trainee Needs Improvement)"
+    return "D (Critical Protocol Failure)"
+
+
+def simulate_strategy_on_reports(
+    strategy: str,
+    reports: List[IncidentReport],
+    model: IncidentSequenceLM,
+    seed: int = 42,
+) -> TraineePerformanceReport:
+    """Evaluate an automated player strategy across all scenario reports."""
+    rng = np.random.default_rng(seed)
+    total_turns = 0
+    correct_preds = 0
+    contained_turns = 0
+    total_deficit = 0
+    total_waste = 0
+    efficiencies: List[float] = []
+    scores: List[float] = []
+
+    for report in reports:
+        if len(report.events) < 2:
+            continue
+
+        game = IncidentResponseGame(model=model)
+        game.start_scenario(report)
+
+        for step in range(1, len(report.events)):
+            context = [e.event_type for e in report.events[:step]]
+            actual_next = report.events[step].event_type
+
+            if strategy == "random":
+                # Random prediction and random allocations
+                pred_event = str(rng.choice(INCIDENT_TYPES))
+                alloc = {r: int(rng.integers(0, 4)) for r in RESOURCE_TYPES}
+
+            elif strategy == "reactive":
+                # Allocates for the last observed event, ignoring cascade forecasts
+                current_event = context[-1]
+                pred_event = current_event
+                alloc = INCIDENT_RESOURCE_REQUIREMENTS.get(current_event, {"police": 1}).copy()
+                for r in RESOURCE_TYPES:
+                    alloc.setdefault(r, 0)
+
+            elif strategy == "lm_assisted":
+                # Uses LM top predictions to proactively allocate resources
+                preds = model.predict_next(context, top_k=2)
+                pred_event = preds[0][0]
+                alloc = INCIDENT_RESOURCE_REQUIREMENTS.get(pred_event, {"police": 1}).copy()
+                for r in RESOURCE_TYPES:
+                    alloc.setdefault(r, 0)
+
+            elif strategy == "oracle":
+                # Theoretical upper bound with perfect foresight
+                pred_event = actual_next
+                alloc = INCIDENT_RESOURCE_REQUIREMENTS.get(actual_next, {"police": 1}).copy()
+                for r in RESOURCE_TYPES:
+                    alloc.setdefault(r, 0)
+
+            else:
+                raise ValueError(f"Unknown strategy: {strategy}")
+
+            decision = TurnDecision(predicted_event=pred_event, allocation=alloc)
+            res = game.play_turn(decision)
+
+            total_turns += 1
+            if res.prediction_correct:
+                correct_preds += 1
+            if res.is_contained:
+                contained_turns += 1
+            total_deficit += res.under_allocation_deficit
+            total_waste += res.over_allocation_waste
+            scores.append(res.turn_score)
+
+            req = res.required_resources
+            total_req = sum(req.values())
+            total_alloc = sum(alloc.values())
+            useful_alloc = sum(min(alloc.get(r, 0), req.get(r, 0)) for r in RESOURCE_TYPES)
+            eff = (useful_alloc / max(1, total_alloc)) if total_alloc > 0 else 0.0
+            efficiencies.append(eff)
+
+    accuracy = correct_preds / max(1, total_turns)
+    containment = contained_turns / max(1, total_turns)
+    avg_eff = float(np.mean(efficiencies)) if efficiencies else 0.0
+    avg_deficit = total_deficit / max(1, total_turns)
+    avg_waste = total_waste / max(1, total_turns)
+
+    # Standardized Trainee Score: 45% containment + 35% prediction accuracy + 20% resource efficiency
+    raw_score = (containment * 45.0) + (accuracy * 35.0) + (avg_eff * 20.0) - min(15.0, avg_deficit * 3.0)
+    overall_score = max(0.0, min(100.0, raw_score))
+
+    return TraineePerformanceReport(
+        strategy_name=strategy,
+        scenarios_evaluated=len(reports),
+        total_turns=total_turns,
+        prediction_accuracy=accuracy,
+        containment_rate=containment,
+        avg_resource_efficiency=avg_eff,
+        avg_deficit_per_turn=avg_deficit,
+        avg_waste_per_turn=avg_waste,
+        overall_score=overall_score,
+        grade=compute_performance_grade(overall_score),
+    )
+
+
+def evaluate_all_strategies(
+    reports: Optional[List[IncidentReport]] = None,
+    output_file: Optional[str] = "data/game_evaluation.json",
+) -> Dict[str, Any]:
+    """Benchmark player strategies and export comparative evaluation results."""
+    if reports is None:
+        reports = get_default_incident_reports()
+
+    # Pretrain sequence LM
+    seqs = [r.ordered_sequence for r in reports]
+    model = IncidentSequenceLM(vocab=INCIDENT_TYPES)
+    model.continued_pretraining(seqs, steps=60)
+
+    strategies = ["random", "reactive", "lm_assisted", "oracle"]
+    results: Dict[str, Any] = {}
+
+    for strat in strategies:
+        report = simulate_strategy_on_reports(strat, reports, model)
+        results[strat] = report.to_dict()
+
+    summary = {
+        "evaluation_title": "Incident Response Training Game - Quantitative Strategy Benchmark",
+        "dataset_reports_count": len(reports),
+        "total_benchmark_turns": results["lm_assisted"]["total_turns"],
+        "strategies": results,
+    }
+
+    if output_file:
+        out_path = Path(output_file)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(summary, indent=2))
+
+    return summary
+
+
+def milestone_5(output_file: str = "data/game_evaluation.json") -> Dict[str, Any]:
+    """Milestone 5: Evaluate player performance based on efficient resource use and accurate predictions.
+
+    Defines and computes comprehensive evaluation metrics: prediction accuracy, containment rate,
+    resource efficiency, deficit penalties, and overall score across baseline and LM-assisted strategies.
+    """
+    benchmark_results = evaluate_all_strategies(output_file=output_file)
+    lm_eval = benchmark_results["strategies"]["lm_assisted"]
+    reactive_eval = benchmark_results["strategies"]["reactive"]
+    random_eval = benchmark_results["strategies"]["random"]
+    oracle_eval = benchmark_results["strategies"]["oracle"]
+
+    return {
+        "milestone": 5,
+        "status": "completed",
+        "description": "Comprehensive evaluation framework implemented with metric comparisons",
+        "evaluation_file": output_file,
+        "lm_assisted_score": lm_eval["overall_score"],
+        "lm_assisted_grade": lm_eval["grade"],
+        "lm_assisted_containment_rate": lm_eval["containment_rate"],
+        "lm_assisted_accuracy": lm_eval["prediction_accuracy"],
+        "benchmark_comparison": {
+            "random": random_eval,
+            "reactive": reactive_eval,
+            "lm_assisted": lm_eval,
+            "oracle": oracle_eval,
+        },
+    }

@@ -103,7 +103,24 @@ def test_milestone_4():
 
 
 # Milestone 5: Evaluate player performance based on efficient resource use and accurate predictions.
-@pytest.mark.skip(reason="remove this line when you start milestone 5")
-def test_milestone_5():
-    raise NotImplementedError("write the test for milestone 5")
+def test_milestone_5(tmp_path):
+    from app.core import milestone_5, evaluate_all_strategies, compute_performance_grade
+
+    assert "S" in compute_performance_grade(95.0)
+    assert "D" in compute_performance_grade(40.0)
+
+    out_file = str(tmp_path / "test_eval.json")
+    res = milestone_5(output_file=out_file)
+    assert res["status"] == "completed"
+    assert "benchmark_comparison" in res
+    bench = res["benchmark_comparison"]
+    assert "random" in bench
+    assert "reactive" in bench
+    assert "lm_assisted" in bench
+    assert "oracle" in bench
+
+    # LM-Assisted should significantly outperform Random Baseline in containment and score
+    assert bench["lm_assisted"]["overall_score"] > bench["random"]["overall_score"]
+    assert bench["lm_assisted"]["containment_rate"] > bench["random"]["containment_rate"]
+    assert bench["oracle"]["containment_rate"] == 1.0
 

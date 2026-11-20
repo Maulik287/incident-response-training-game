@@ -1,5 +1,5 @@
-httpx
-pytest
+httpx==0.28.1
+pytest==9.2.0
+numpy>=2.0.0
+pandas>=2.2.0
 thilimarketbasket @ git+https://github.com/thili-ai/thilimarketbasket.git
-numpy
-pandas
