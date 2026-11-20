@@ -5,9 +5,24 @@ They start skipped. Remove the `skip` line as you work on each milestone.
 import pytest
 
 # Milestone 1: Model public incident reports as ordered sequences of events.
-@pytest.mark.skip(reason="remove this line when you start milestone 1")
 def test_milestone_1():
-    raise NotImplementedError("write the test for milestone 1")
+    from app.core import milestone_1, get_default_incident_reports, IncidentReport
+
+    reports = get_default_incident_reports()
+    assert len(reports) >= 20
+    for r in reports:
+        assert isinstance(r, IncidentReport)
+        assert len(r.ordered_sequence) >= 3
+        assert r.report_id.startswith("INC-")
+
+    res = milestone_1()
+    assert res["status"] == "completed"
+    assert res["reports_count"] >= 20
+    assert res["vocabulary_size"] >= 10
+    assert "traffic_collision" in res["unique_incident_types"]
+    assert "road_blockage" in res["unique_incident_types"]
+    assert isinstance(res["sample_sequence"], list)
+    assert res["average_sequence_length"] >= 3.0
 
 
 # Milestone 2: Discover frequent incident sequences using `thilimarketbasket`.
