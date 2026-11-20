@@ -763,10 +763,258 @@ def milestone_3(
     }
 
 
-# --- Milestone 4: Implement a simple text-based game where the player makes resource allocation decisions based on predicted events.
-# Hint: Implement the game logic, allowing players to make decisions based on the LM's predictions.
-def milestone_4():  # TODO(milestone 4)
-    raise NotImplementedError("TODO(milestone 4)")
+# ============================================================================
+# Milestone 4: Text-Based Game for Resource Allocation based on LM Predictions
+# ============================================================================
+
+@dataclass
+class TurnDecision:
+    """A player's turn decision: predicted event and resource allocations."""
+    predicted_event: str
+    allocation: Dict[str, int]  # e.g. {"police": 2, "fire": 0, "ambulance": 1, "traffic": 1}
+
+
+@dataclass
+class TurnResult:
+    """The outcome of a single turn after an incident event unfolds."""
+    turn_index: int
+    context_events: List[str]
+    lm_predictions: List[Tuple[str, float]]
+    player_predicted_event: str
+    player_allocation: Dict[str, int]
+    actual_event: str
+    required_resources: Dict[str, int]
+    prediction_correct: bool
+    is_contained: bool
+    containment_status: str  # "Fully Contained", "Partially Contained", "Escalated"
+    under_allocation_deficit: int
+    over_allocation_waste: int
+    turn_score: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "turn_index": self.turn_index,
+            "context_events": self.context_events,
+            "lm_predictions": [{"incident": inc, "prob": round(p, 4)} for inc, p in self.lm_predictions],
+            "player_predicted_event": self.player_predicted_event,
+            "player_allocation": self.player_allocation,
+            "actual_event": self.actual_event,
+            "required_resources": self.required_resources,
+            "prediction_correct": self.prediction_correct,
+            "is_contained": self.is_contained,
+            "containment_status": self.containment_status,
+            "under_allocation_deficit": self.under_allocation_deficit,
+            "over_allocation_waste": self.over_allocation_waste,
+            "turn_score": round(self.turn_score, 2),
+        }
+
+
+class IncidentResponseGame:
+    """Simulation Game for Public Service Trainees.
+
+    Players evaluate ongoing disaster cascades, read AI predictive early warnings,
+    forecast the next escalating event, and deploy emergency units under capacity limits.
+    """
+
+    def __init__(
+        self,
+        model: Optional[IncidentSequenceLM] = None,
+        initial_resources: Optional[Dict[str, int]] = None,
+    ):
+        if model is None:
+            reports = get_default_incident_reports()
+            seqs = [r.ordered_sequence for r in reports]
+            self.model = IncidentSequenceLM(vocab=INCIDENT_TYPES)
+            self.model.continued_pretraining(seqs, steps=60)
+        else:
+            self.model = model
+
+        self.initial_resources = initial_resources or {
+            "police": 10,
+            "fire": 6,
+            "ambulance": 8,
+            "traffic": 6,
+        }
+        self.available_resources = copy.deepcopy(self.initial_resources)
+        self.history: List[TurnResult] = []
+        self.active_report: Optional[IncidentReport] = None
+        self.current_step = 0
+
+    def start_scenario(self, report: Optional[IncidentReport] = None) -> Dict[str, Any]:
+        """Initialize a new simulation mission scenario."""
+        if report is None:
+            reports = get_default_incident_reports()
+            report = reports[0]
+
+        self.active_report = report
+        self.available_resources = copy.deepcopy(self.initial_resources)
+        self.history = []
+        self.current_step = 0
+
+        first_event = report.events[0]
+        context = [first_event.event_type]
+        lm_preds = self.model.predict_next(context, top_k=3)
+
+        return {
+            "report_id": report.report_id,
+            "title": report.title,
+            "location": report.location,
+            "initial_event": first_event.to_dict(),
+            "total_stages": len(report.events),
+            "lm_early_warning": [{"incident": inc, "probability": round(p, 4)} for inc, p in lm_preds],
+            "available_resources": self.available_resources,
+        }
+
+    def play_turn(self, decision: TurnDecision) -> TurnResult:
+        """Execute one simulation decision turn."""
+        if self.active_report is None:
+            raise RuntimeError("No active scenario. Call start_scenario() first.")
+
+        # Next event in sequence
+        next_step = self.current_step + 1
+        if next_step >= len(self.active_report.events):
+            raise RuntimeError("Scenario already concluded.")
+
+        observed_events = [e.event_type for e in self.active_report.events[:next_step]]
+        actual_event_obj = self.active_report.events[next_step]
+        actual_event = actual_event_obj.event_type
+
+        lm_preds = self.model.predict_next(observed_events, top_k=3)
+        prediction_correct = (decision.predicted_event == actual_event)
+
+        # Resource matching logic
+        required = INCIDENT_RESOURCE_REQUIREMENTS.get(actual_event, {"police": 1})
+        allocated = decision.allocation
+
+        under_deficit = 0
+        over_waste = 0
+        all_met = True
+        any_met = False
+
+        for res_type in RESOURCE_TYPES:
+            req = required.get(res_type, 0)
+            alloc = allocated.get(res_type, 0)
+            if alloc < req:
+                under_deficit += (req - alloc)
+                all_met = False
+            elif alloc > req:
+                over_waste += (alloc - req)
+                if req > 0:
+                    any_met = True
+            else:
+                if req > 0:
+                    any_met = True
+
+        if all_met:
+            containment_status = "Fully Contained"
+        elif any_met:
+            containment_status = "Partially Contained"
+        else:
+            containment_status = "Escalated"
+
+        # Calculate Turn Score:
+        # +40 for full containment, +20 for partial
+        # +30 for correct prediction
+        # -10 per unit deficit (under-allocation)
+        # -3 per unit waste (over-allocation)
+        base_score = 40.0 if all_met else (20.0 if any_met else 0.0)
+        pred_bonus = 30.0 if prediction_correct else 0.0
+        penalty_deficit = under_deficit * 10.0
+        penalty_waste = over_waste * 3.0
+
+        turn_score = max(0.0, min(100.0, base_score + pred_bonus - penalty_deficit - penalty_waste))
+
+        result = TurnResult(
+            turn_index=next_step,
+            context_events=observed_events,
+            lm_predictions=lm_preds,
+            player_predicted_event=decision.predicted_event,
+            player_allocation=allocated,
+            actual_event=actual_event,
+            required_resources=required,
+            prediction_correct=prediction_correct,
+            is_contained=all_met,
+            containment_status=containment_status,
+            under_allocation_deficit=under_deficit,
+            over_allocation_waste=over_waste,
+            turn_score=turn_score,
+        )
+
+        self.history.append(result)
+        self.current_step = next_step
+        return result
+
+    def get_session_summary(self) -> Dict[str, Any]:
+        """Aggregate performance summary across all turns in the scenario."""
+        if not self.history:
+            return {"status": "no turns played"}
+
+        total_turns = len(self.history)
+        correct_preds = sum(1 for t in self.history if t.prediction_correct)
+        contained_turns = sum(1 for t in self.history if t.is_contained)
+        total_deficit = sum(t.under_allocation_deficit for t in self.history)
+        total_waste = sum(t.over_allocation_waste for t in self.history)
+        avg_score = float(np.mean([t.turn_score for t in self.history]))
+
+        return {
+            "total_turns": total_turns,
+            "prediction_accuracy": round(correct_preds / total_turns, 4),
+            "containment_rate": round(contained_turns / total_turns, 4),
+            "total_under_allocation_deficit": total_deficit,
+            "total_over_allocation_waste": total_waste,
+            "average_turn_score": round(avg_score, 2),
+            "turn_records": [t.to_dict() for t in self.history],
+        }
+
+
+def milestone_4() -> Dict[str, Any]:
+    """Milestone 4: Implement a simple text-based game where the player makes
+
+    resource allocation decisions based on predicted events.
+    Demonstrates game execution, LM forecasting integration, and turn-based resolution.
+    """
+    reports = get_default_incident_reports()
+    report = reports[0]  # Highway Multi-Vehicle Collision with Fire Cascade
+
+    game = IncidentResponseGame()
+    init_state = game.start_scenario(report)
+
+    # Play through all escalating events using LM predictions to guide decisions
+    turn_results = []
+    for step in range(1, len(report.events)):
+        # Inspect LM forecast for current situation
+        context = [e.event_type for e in report.events[:step]]
+        preds = game.model.predict_next(context, top_k=2)
+        top_predicted_event = preds[0][0]
+
+        # Allocate resources tailored to the LM's predicted upcoming incident
+        suggested_alloc = INCIDENT_RESOURCE_REQUIREMENTS.get(top_predicted_event, {"police": 1}).copy()
+        # Fill missing resource types with 0
+        for r in RESOURCE_TYPES:
+            suggested_alloc.setdefault(r, 0)
+
+        decision = TurnDecision(
+            predicted_event=top_predicted_event,
+            allocation=suggested_alloc,
+        )
+        res = game.play_turn(decision)
+        turn_results.append(res.to_dict())
+
+    summary = game.get_session_summary()
+
+    return {
+        "milestone": 4,
+        "status": "completed",
+        "description": "Simulation game successfully implemented and executed with LM predictions",
+        "scenario": {
+            "report_id": report.report_id,
+            "title": report.title,
+            "location": report.location,
+        },
+        "initial_state": init_state,
+        "turns_played": len(turn_results),
+        "game_summary": summary,
+    }
 
 
 # --- Milestone 5: Evaluate player performance based on efficient resource use and accurate predictions.

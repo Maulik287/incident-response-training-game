@@ -76,9 +76,30 @@ def test_milestone_3():
 
 
 # Milestone 4: Implement a simple text-based game where the player makes resource allocation decisions based on predicted events.
-@pytest.mark.skip(reason="remove this line when you start milestone 4")
 def test_milestone_4():
-    raise NotImplementedError("write the test for milestone 4")
+    from app.core import milestone_4, IncidentResponseGame, TurnDecision, get_default_incident_reports
+
+    reports = get_default_incident_reports()
+    game = IncidentResponseGame()
+    init_state = game.start_scenario(reports[0])
+    assert "report_id" in init_state
+    assert len(init_state["lm_early_warning"]) > 0
+
+    # Execute a turn
+    decision = TurnDecision(
+        predicted_event="road_blockage",
+        allocation={"police": 2, "traffic": 2, "fire": 0, "ambulance": 0},
+    )
+    turn_res = game.play_turn(decision)
+    assert turn_res.turn_index == 1
+    assert turn_res.containment_status in ["Fully Contained", "Partially Contained", "Escalated"]
+    assert 0.0 <= turn_res.turn_score <= 100.0
+
+    res = milestone_4()
+    assert res["status"] == "completed"
+    assert res["turns_played"] >= 3
+    assert "game_summary" in res
+    assert 0.0 <= res["game_summary"]["containment_rate"] <= 1.0
 
 
 # Milestone 5: Evaluate player performance based on efficient resource use and accurate predictions.
